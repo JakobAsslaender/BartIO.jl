@@ -1,73 +1,136 @@
 module BartIO
 
 using BufferedStreams
-using ConfParser
 using PyCall
+using Preferences
 
 # Exported functions
 export readcfl
 export writecfl
 export initBart
+export checkPath
+export wrapperBart
+export wrapperBartpy
 
 """
-    bart = initBart(pathtobart::String,pathtobartpy::String)
-
-Initialize the installation of bart and to bartpy in order to make it available 
-from the bartpy package through PyCall and store the path in a config file
-
-## Input Parameters
-- 
-
-## output
-
-# Example
+    pybart::PyObject = initBart(path2bart::String="",path2bartpy::String="")
+Initialize the installation of bart and to bartpy and store the path in a config file.
+### Optionnal input Parameters
+- path2bart : path to the BART folder
+- path2bartpy : path to the bartpy folder
 """
+function initBart(;path2bart::String="",path2bartpy::String="")
 
-function initBart(path2bart::String="",path2bartpy::String="")
-    
-    conf = ConfParser.ConfParse("confs/config.ini")
-    parse_conf!(conf)
-
-    pathtobart=CheckAndSetPath!(conf,"BART","pathtobart",path2bart)
-    pathtobartpy=CheckAndSetPath!(conf,"BART","pathtobartpy",path2bartpy)
-
-    # Build PyBart
-    
-    path2BartPython = pathtobart*"/python"
-    py"""
-    import sys
-    import os
-    sys.path.insert(0, $path2BartPython)
-    os.environ['TOOLBOX_PATH'] = $pathtobart
-    """
-    python_pycall = PyCall.python
-
-    cmd = `cd $pathtobartpy \; $python_pycall setup.py install`
-    run(cmd)
-    
-    #@PyCall.pyimport bartpy.tools as bartpy #Equivalent to -> bartpy = pyimport("bartpy.tools") but does not work in module...
-    bartpy = pyimport("bartpy.tools")
-    bartpy.version()
-    
-    return bartpy
+    @set_preferences!("bart" => path2bart)
+    @set_preferences!("bartpy" => path2bartpy)
 end
 
-## Utility functions
-function CheckAndSetPath!(conf::ConfParse,blockname::String,pathname::String,path::String)
+"""
+bartpyWrap = wrapperBartpy()
+
+
+### output
+- bartpyWrap : a wrapper to call bart from Julia through the python bartpy toolbox (see Example to learn how to use it)
+
+# Example
+```julia
+bartpy = BartIO.initBart(path2bart = path2bartFolder,path2bartpy = path2bartpyFolder)
+bartpy.version()
+k_phant = bartpy.phantom(x=64,k=1)
+```
+If you need help for the function you can either use :
+```
+run(`bart pics -h`)
+```
+or import with pycall the help function :
+```julia
+using PyCall
+pyhelp = pybuiltin("help")
+pyhelp(bartpy.phantom)
+```
+"""
+function wrapperBartpy()
+    bart,bartpy = checkPath()
+
+    python_pycall = PyCall.python
+
+    run(`$python_pycall -m pip install numpy`)
+    
+    PyCall.py"""
+    import os
+    os.environ['TOOLBOX_PATH'] = $bart
+    print(os.environ['TOOLBOX_PATH'])
+    os.chdir($bartpy)
+    os.system($python_pycall + " setup.py install --user")
+    """
+    BartIOPath = pwd()
+    cd(BartIOPath)
+
+    #@PyCall.pyimport bartpy.tools as bartpy #Equivalent to -> bartpy = pyimport("bartpy.tools") but does not work in module...
+    bartpyWrap = pyimport("bartpy.tools")
+    bartpyWrap.version()
+    
+    return bartpyWrap
+end
+
+"""
+    bartWrap = wrapperBart()
+
+    ### output
+    - bartWrap : a wrapper to call bart from Julia through the python functions from the bart repository.
+
+    Example : 
+    ````
+    bartWrap = wrapperBart()
+    bartWrap.bart(0,"version")
+
+    bartWrap.bart(0,"phantom -h")
+    bartWrap.bart(1,"phantom -k -x128")
+    ````
+"""
+function wrapperBart()
+    bart,bartpy = checkPath()
+    
+    python_pycall = PyCall.python
+
+    run(`$python_pycall -m pip install numpy`)
+
+    PyCall.py"""
+    import os
+    import sys
+    os.environ['TOOLBOX_PATH'] = $bart
+    path = os.environ["TOOLBOX_PATH"] + "/python/"
+    sys.path.append(path)
+    """
+
+    bartWrap = pyimport("bart")
+    bartWrap.bart(0,"version")
+    
+    return bartWrap
+end
+
+"""
+    checkPath()
+
+    Print the path store in the LocalPreference.toml for :
+    - bart
+    - bartpy
+"""
+function checkPath()
+    pathname = ["bart","bartpy"]
+    paths = String[]
+    for i in pathname
+        path = @load_preference(i)
         
-    if isempty(path); 
-        path = retrieve(conf,blockname,pathname)
-        if isempty(path); error("$pathname is not defined ! Set it with the function : \n initBart(path2bart::String,path2bartpy::String)"); end
-    else
-        commit!(conf, blockname, pathname, path);
-        save!(conf)
+        if isnothing(path)
+            println("$i is empty")
+            push!(paths,(i,""))
+        else
+            println("$i = $path")
+            push!(paths,path)
+        end
     end
-        
-    # check if path exists
-    if !isdir(path)
-        error(path*" is not a valid directory ! redefined it")
-    end
-    return path
+    return paths[1], paths[2]
 end
 
 """
@@ -167,7 +230,7 @@ function writereconheader(filenameBase::String,dims::Array{Int})
     filename = string(filenameBase, ".hdr");
 
     fid = open(filename,"w");
-    write(fid,"# Dimension\n")
+    write(fid,"# Dimensions\n")
     a = length(dims)
     for i in 1:length(dims)
         write(fid,string(dims[i])*" ")
